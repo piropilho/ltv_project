@@ -1,0 +1,9 @@
+﻿step,n_features,weighted_wf_r2
+0_baseline,10,0.6364486165599303
+1_add_t_features,12,0.6405520756551976
+2_add_market_feature(기각),13,
+3_add_12q_trailing(기각),13,0.5890151362239282
+4_add_price_momentum,13,0.653645133573194
+5_add_seasonality(기각),14,0.6498202107500787
+6_add_policy_events,15,0.6869145662735403
+7_add_jeonse_ratio,16,0.6798208452903245

@@ -1,4 +1,5 @@
 .venv/
 .env
 *.csv
+!data/csv/*.csv
 __pycache__/

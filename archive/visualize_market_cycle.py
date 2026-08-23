@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 import pandas as pd
 
-from dummy_code.eda_7years import REGIME_BOUNDARIES, POLICY_EVENTS
+from build_master_data import REGIME_BOUNDARIES, POLICY_EVENTS
 
 for font_name in ["AppleGothic", "Malgun Gothic", "NanumGothic"]:
     if any(font_name in f.name for f in fm.fontManager.ttflist):

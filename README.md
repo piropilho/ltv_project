@@ -1,142 +1,139 @@
-# 동대문구 아파트 LTV/담보가치 리스크 모델
+# 동대문구 아파트 LTV 차등부여 프로젝트
 
-서울 동대문구를 파일럿 지역으로 삼아, 국토교통부 실거래가 데이터를 기반으로
-아파트 담보가치 리스크를 분석하고 단지별 LTV 차등 적용 근거를 마련하는 프로젝트.
+서울 동대문구를 파일럿으로, 단지별 **매매 유동성 예측**을 근거로 정부 LTV 상한(40%)
+이내에서 은행이 실제로 얼마까지 빌려줄지 차등 제안하는 프로젝트. (배경: 담보가 안
+팔리면 경매에서 손해가 커진다는 LGD(Loss Given Default) 관점)
 
-## 핵심 프레이밍: 은행 리스크관리의 LGD (Loss Given Default)
+이 문서는 **처음 레포를 받은 팀원이 데모를 실행해보기 위한 가이드**입니다. 전체 방법론과
+각 실험의 근거는 코드 파일 상단 docstring에 자세히 남아있으니, 특정 단계를 깊게 알고
+싶으면 해당 스크립트를 열어보세요.
 
-담보가 경매로 넘어갔을 때 "얼마나 손해를 보는가"는 가격 변동성만이 아니라
-**환금성(유동성)**에도 좌우된다. 거래가 뜸한 단지는 강제매각(경매) 시 매수자를
-찾기 어려워 매각가율이 더 크게 할인된다 (2019→2024 노도강 경매 4배 증가,
-매각가율 92.7~103.7%→78.2~89.5% 하락 사례로 검증). 이 프로젝트는 이 인과관계를
-근거로 **유동성을 LTV 차등화의 리스크 지표**로 채택한다.
-
-- **트랙 A (GWR)**: "지금 이 단지가 왜 위험한가" — 정적 스냅샷 기반 설명모델.
-  가격 변동성(MDD/CV)을 입지특성으로 설명하려 했으나 설명력이 낮아(R²~0.4대)
-  **참고자료로만 사용**, 최종 LTV 근거로는 쓰지 않는다.
-- **유동성 예측 (최종 채택)**: 입지특성(경사도/세대수/교통 등) + 시변 변수(상권/인구)로
-  "이 단지가 앞으로 1년간 얼마나 자주 거래될 것인가"를 예측하는 walk-forward 모델
-  (`liquidity_forward_prediction.py`, R²=0.687). 이 예측값이 최종 LTV 차등매핑의
-  근거가 된다.
-- **트랙 B (가격예측, XGBoost)**: 폐기됨. `train_model.py`는 삭제되었고, 그중
-  정책규제 이벤트 피처만 `policy_events.py`로 분리되어 유동성 예측 모델에 재사용된다.
-
-## 디렉토리 구조
-
-```
-데이터 크롤링/    원본 데이터 수집 (국토부/카카오/부동산원 API 크롤러)
-근거자료/         모델링 과정에서의 변수선택·검증·진단 스크립트 (발표 근거자료)
-archive/          더 이상 안 쓰지만 참고용으로 보관하는 코드/문서
-data/
-  ├─ 19_25_trading_data/   원본 연도별 실거래 데이터 (크롤링 산출물)
-  ├─ data_geo_coding/      지오코딩 캐시/산출물
-  ├─ csv/                  작업용 CSV 전체 (마스터 데이터, 모델 입출력, 진단 결과)
-  └─ img/                  발표/보고용 시각화 차트
-```
-
-## 파이프라인 순서
-
-```
-1. 데이터 크롤링/apt_trading.py      국토교통부 매매 실거래가 API -> data/19_25_trading_data/
-2. 데이터 크롤링/geocode_apt.py      카카오 API로 단지 주소 지오코딩 -> data/data_geo_coding/
-3. 데이터 크롤링/세대수_크롤링.py     한국부동산원 API로 단지별 세대수 -> data/csv/apt_unit_count_동대문구.csv
-4. 데이터 크롤링/전월세_크롤링.py     국토교통부 전월세 실거래가 API -> data/csv/전월세_2019_2025_동대문구.csv
-5. build_master_data.py             7개년 실거래 데이터 클리닝 -> data/csv/master_19_25_cleaning.csv
-                                     (POLICY_EVENTS 정의도 이 파일에서 관리)
-6. 근거자료/spatial_autocorrelation.py   이웃단지 집계 개수(k) 선정 근거
-7. gwr_analysis.py                  트랙 A: GWR 회귀 (참고자료)
-   근거자료/gwr_feature_selection.py    GWR용 정적 입지변수 선별 (반경/학군/교통)
-   근거자료/radius_selection.py         경사도 반경 4종 비교 시각화
-   근거자료/panel_feature_selection.py  시변 변수 → 가격변동성 설명력 검증 (기각됨, R²~0.05)
-8. liquidity_feature_selection.py   현재시점 유동성 설명력 검증 (정적+시변 변수)
-   근거자료/liquidity_xgboost_check.py  비선형(XGBoost) 모델과 LASSO 비교
-9. liquidity_forward_prediction.py  최종: 1년 후 유동성 예측 (walk-forward, R²=0.687)
-   근거자료/liquidity_forward_overfitting_check.py  과적합 점검 (train/test R² 격차)
-```
-
-## 스크립트별 설명
-
-### `데이터 크롤링/`
-
-- **`apt_trading.py`**: 국토교통부 실거래가 공개 API(`RTMSDataSvcAptTrade`)로 동대문구
-  (`LAWD_CD=11230`) 아파트 매매 실거래 데이터를 수집한다. `.env`의 `MOLIT_SERVICE_KEY` 필요.
-- **`geocode_apt.py`**: 카카오 로컬 API(주소 검색)로 단지 위경도를 구한다. 단지명은 전국에
-  동명 단지가 많아 신뢰할 수 없으므로 법정동+지번 조합으로 지오코딩한다. `.env`의
-  `KAKAO_REST_API_KEY` 필요.
-- **`세대수_크롤링.py`**: 한국부동산원 `AptIdInfoSvc`(공동주택 단지 식별정보) API로 단지별
-  세대수(`UNIT_CNT`)를 수집한다. 이 API의 단지 식별체계가 `final.csv`의 `complex_id`와
-  달라 주소(동+지번)로 매칭 (336개 중 305개, 95.6% 매칭 성공). 유동성 모델에서 가장 설명력
-  높은 단일 변수로 확인됨.
-- **`전월세_크롤링.py`**: 국토교통부 전월세 실거래가 API(`RTMSDataSvcAptRent`)로 2019~2025년
-  전월세 데이터를 수집한다 (전세가율 피처 실험에 사용, 최종 채택은 안 됨).
-
-### `build_master_data.py`
-2019~2025년 7개년 실거래 데이터를 정제해 `data/csv/master_19_25_cleaning.csv`를 만든다.
-이후 모든 분석(GWR, 유동성 모델)의 공통 입력. 정책 발표일 목록(`POLICY_EVENTS`)과 시장
-국면 경계(`REGIME_BOUNDARIES`)도 이 파일에서 정의하며, `POLICY_EVENTS`는 `policy_events.py`가
-가져다 쓴다.
-
-### `policy_events.py`
-`build_master_data.POLICY_EVENTS`를 기준으로 특정 시점의 "마지막 규제 발표 후 경과일"과
-"최근 1년 내 규제 발표 횟수"를 계산하는 유틸. 원래 폐기된 `train_model.py`(트랙 B)에 있던
-로직을 `liquidity_forward_prediction.py`가 계속 쓰기 위해 분리했다.
-
-### `gwr_analysis.py` (참고자료)
-트랙 A. 지리적 가중회귀(GWR)로 "왜 지금 이 단지가 위험한가"를 설명하는 정적 스냅샷 분석.
-관측 단위는 단지 1개 = 1행, 종속변수는 MDD(주력)·CV(보조) 병행 산출. 실거래 데이터 단독
-베이스라인과 입지변수 추가 확장 모델을 비교했으나 설명력 개선이 크지 않아(adjR² 0.39→0.43,
-AICc 기준 유의한 개선 아님) **참고자료로만 사용**, 최종 LTV 근거에는 포함하지 않는다.
-
-### `liquidity_feature_selection.py`
-현재시점 유동성(`trade_activity_ratio`=거래분기비율)을 정적 입지변수(경사도/학군/교통/세대수)
-와 시변 변수(상권/인구)의 단지별 시간평균으로 설명할 수 있는지 검증한다. 세대수(`unit_cnt`)가
-가장 강력한 단일 변수로 확인됨.
-
-### `liquidity_forward_prediction.py` (최종 핵심 산출물)
-1년 후 유동성(`forward_activity_ratio_1y`)을 예측하는 walk-forward 검증 모델. 관측 단위는
-(단지, 분기) 패널이며, XGBoost 사용. STEP0~STEP7 실험 로그가 파일 상단 docstring에 남아있다
-(채택: 트레일링 활동비율/세대수/인구 + 상권지수 + 인구증가율 + 가격모멘텀 + 정책규제 경과일;
-기각: 시장전체 활동수준, 12분기 트레일링, 전세가율). 최종 walk-forward R²=0.687.
-
-### `근거자료/` (변수선택·검증·진단)
-- **`spatial_autocorrelation.py`**: 이웃단지 집계 개수(k=5) 선정 근거.
-- **`gwr_feature_selection.py`**: GWR에 추가할 정적 입지변수(경사도 반경/학군/교통) 스크리닝.
-- **`radius_selection.py`**: 경사도 반경 4종(100/150/200/300m)의 예측력 비교 시각화.
-- **`panel_feature_selection.py`**: 시변 변수 → 가격변동성 설명력 검증 (R²~0.05로 기각,
-  "입지특성은 변동성보다 유동성에 더 적합하다"는 가설 전환의 근거).
-- **`liquidity_xgboost_check.py`**: 유동성 예측에서 비선형(XGBoost) 모델이 LASSO 대비
-  유의미하게 나은지 비교.
-- **`liquidity_forward_overfitting_check.py`**: 최종 유동성 예측 모델의 train/test R² 격차를
-  폴드별로 확인해 과적합 여부를 점검 (폴드가 뒤로 갈수록 격차 축소 → 과적합 아님).
-
-### `archive/`
-더 이상 파이프라인에 쓰이지 않지만 참고용으로 보관하는 코드/문서
-(`visualize_market_cycle.py`, `데이터_명세서.pdf`, `클로드코드_인계_최종.md`).
-
-## 데이터 (`data/`)
-
-주요 산출물만 정리한다. 그 외 CSV는 각 스크립트 실행 시 재생성 가능.
-
-| 파일 | 생성 스크립트 | 내용 |
-|---|---|---|
-| `csv/master_19_25_cleaning.csv` | `build_master_data.py` | 정제된 7개년 실거래 데이터 (모든 분석의 기준) |
-| `csv/final.csv` | (외부 결합) | 실거래 + 입지변수(경사도/학군/교통) 결합 최종 테이블 |
-| `csv/apt_unit_count_동대문구.csv` | `데이터 크롤링/세대수_크롤링.py` | 단지별 세대수 |
-| `csv/전월세_2019_2025_동대문구.csv` | `데이터 크롤링/전월세_크롤링.py` | 전월세 실거래 (미채택 피처 실험용) |
-| `csv/gwr_*.csv` | `gwr_analysis.py`, `근거자료/gwr_feature_selection.py` | GWR 입력·결과 |
-| `csv/liquidity_*.csv` | `liquidity_feature_selection.py`, `liquidity_forward_prediction.py` | 유동성 모델 입력·결과 |
-| `csv/panel_*.csv` | `근거자료/panel_feature_selection.py` | 시변변수→변동성 검증 (기각된 가설, 판단 필요 자료로 보류) |
-| `csv/spatial_autocorrelation*.csv` | `근거자료/spatial_autocorrelation.py` | 이웃 k값 선정 근거 |
-| `img/radius_selection.png` | `근거자료/radius_selection.py` | 경사도 반경 비교 차트 |
-| `img/liquidity_forward_overfitting_check.png` | `근거자료/liquidity_forward_overfitting_check.py` | 과적합 점검 차트 |
-
-## 환경 설정
+## 빠른 시작
 
 ```bash
+git clone <repo-url>
+cd ltv_pilho
+
+python3 -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+
 pip install -r requirements.txt
+python3 demo.py
 ```
 
-`.env.example`을 참고해 `.env`에 `MOLIT_SERVICE_KEY`, `KAKAO_REST_API_KEY`를 채운다.
-한국부동산원 API(`세대수_크롤링.py`)는 `MOLIT_SERVICE_KEY`를 공용으로 사용한다
-(data.go.kr 계열 서비스키는 데이터셋별 개별 승인 후 동일 키 공유).
-macOS에서 XGBoost 실행 시 `libomp`가 없으면 로드에 실패하므로 `brew install libomp` 필요.
+`data/csv/`에 필요한 데이터가 이미 git에 포함되어 있어서 **별도 다운로드 없이 바로
+실행됩니다.** macOS에서 `xgboost` 로드가 실패하면 `brew install libomp` 실행 후 다시
+시도하세요.
+
+## 데모 사용법
+
+`demo.py`를 실행하면 아파트명을 입력받아 단지 정보와 제안 LTV를 보여줍니다.
+
+```
+동대문구 아파트 LTV 제안 데모
+(조회 가능 317개 단지 -- 종료: q)
+
+아파트명을 입력하세요: 래미안미드카운티
+희망 매매가(만원, 생략 가능): 80000
+
+==============================================================
+ 래미안미드카운티  (답십리동 1013)
+==============================================================
+ 기준 시점         : 2025년 12월 (데이터 확보 최근 분기)
+ 세대수            : 1,009세대
+ 준공 후 경과연수  : 7년
+ 최근 관측 시세    : 1,893만원/㎡
+ 역세권            : 준역세권 (답십리, 도보 15분)
+--------------------------------------------------------------
+ 예측 유동성(향후1년): 100.0%  (동대문구 내 상위 1%)
+ 리스크 등급        : 1등급(상위 유동성)
+ 제안 LTV          : 40%  (정부 상한 40% 이내 차등)
+--------------------------------------------------------------
+ 희망 매매가        : 80,000만원
+ 예상 대출가능금액  : 32,000만원  (매매가 x LTV 40%)
+==============================================================
+```
+
+- 아파트명은 부분 검색이 됩니다 (예: "주공"만 입력해도 관련 단지가 나오고, 여러 건이면
+  번호를 골라 선택).
+- 세대수 데이터가 미매칭된 17개 단지는 LTV 예측이 불가능하다는 안내만 나오고, 나머지
+  정보(시세/역세권 등)는 정상 표시됩니다.
+- 종료하려면 `q`를 입력하세요.
+
+## 결과를 다시 계산하고 싶다면
+
+`demo.py`는 미리 계산된 `data/csv/ltv_assignment.csv`를 읽기만 합니다. 모델을
+재학습하거나 최신 데이터로 갱신하려면 아래 순서로 재실행하세요 (각 단계는 이전 단계의
+산출물을 입력으로 씀):
+
+```bash
+python3 build_master_data.py          # 실거래 데이터 클리닝 -> master_19_25_cleaning.csv
+python3 liquidity_forward_prediction.py  # 유동성 예측 모델 검증 (walk-forward R2 확인용, 선택)
+python3 ltv_scoring.py                # 최종 모델 재학습 + LTV 산출 -> ltv_assignment.csv
+python3 demo.py                       # 갱신된 결과로 데모 실행
+```
+
+## 핵심 로직 한눈에
+
+1. **유동성 예측**: 입지특성(세대수/경사도/교통) + 시변변수(상권/인구/정책규제)로 "이
+   단지를 지금 사면 1년 뒤 유동성이 어떨까"를 XGBoost로 예측 (walk-forward 검증
+   R²=0.687). `liquidity_forward_prediction.py`
+2. **LTV 차등**: 예측 유동성을 4분위로 나눠 등급화하고, 정부 LTV 상한(40%, 2025.10.15
+   대책 기준) 이내에서 등급별로 40/37/33/30% 차등 부여. 폭(10%p)은 은행이 이미
+   신용점수로 상한 내 차등하는 관행(예: 40%→30%)을 그대로 차용한 값. `ltv_scoring.py`
+3. **가격 변동성(MDD/CV)은 참고자료로만 사용**: 입지특성으로 가격 변동성을
+   설명하려 했으나 실패했고(R²~0.05), 변동성 지표(MDD) 자체도 비유동 단지에서
+   관측빈도 편향으로 과소추정되는 걸 확인해 최종 LTV 근거에서 제외했습니다
+   (`gwr_analysis.py`, `근거자료/ltv_discount_calibration.py`).
+
+## 프로젝트 구조
+
+```
+demo.py                       팀원용 데모 CLI (이거 하나만 돌리면 됨)
+ltv_scoring.py                 최종 모델 학습 + LTV 산출 (데모의 데이터 소스)
+liquidity_forward_prediction.py  유동성 예측 모델 검증 (walk-forward, 실험 로그 포함)
+liquidity_feature_selection.py   현재시점 유동성 설명력 검증
+gwr_analysis.py                 가격 변동성(MDD/CV) 설명모델 -- 참고자료
+build_master_data.py            실거래 데이터 클리닝 + 정책이벤트 정의
+policy_events.py                정책규제 경과일 계산 유틸
+
+데이터 크롤링/    원본 데이터 수집 스크립트 (국토부/카카오/부동산원 API)
+근거자료/         변수선택·검증·진단 스크립트 (발표 근거자료)
+archive/          더 이상 안 쓰지만 참고용으로 보관하는 코드/문서
+data/
+  ├─ csv/                  작업용 CSV 전체 (git에 포함됨, 별도 다운로드 불필요)
+  ├─ img/                  발표용 시각화 차트
+  ├─ 19_25_trading_data/   원본 연도별 실거래 데이터 (크롤링 산출물, git 미포함)
+  └─ data_geo_coding/      지오코딩 캐시 (크롤링 산출물, git 미포함)
+```
+
+## 데이터 안내 (`data/csv/`)
+
+| 파일 | 내용 | 비고 |
+|---|---|---|
+| `master_19_25_cleaning.csv` | 정제된 7개년(2019~2025) 실거래 데이터 | `build_master_data.py` 산출물 |
+| `final.csv` | 실거래 + 경사도/학군/교통 등 입지변수가 결합된 최종 테이블 | **팀원이 별도로 만든 파일** — 이 레포의 스크립트로는 재현되지 않음. 대부분의 모델링 스크립트가 이 파일을 입력으로 사용 |
+| `apt_unit_count_동대문구.csv` | 단지별 세대수 | `데이터 크롤링/세대수_크롤링.py` 산출물 |
+| `전월세_2019_2025_동대문구.csv` | 전월세 실거래 (미채택 피처 실험용) | `데이터 크롤링/전월세_크롤링.py` 산출물 |
+| `ltv_assignment.csv` | **최종 산출물** — 단지별 예측 유동성/등급/제안 LTV | `ltv_scoring.py` 산출물, `demo.py`가 그대로 읽음 |
+| 그 외 `gwr_*`, `liquidity_*`, `panel_*`, `spatial_*` | 각 검증/실험 단계의 중간 산출물 | 해당 스크립트 재실행 시 자동 재생성 |
+
+## 환경 변수 (`.env`) — 크롤링 스크립트를 새로 돌릴 때만 필요
+
+데모 실행에는 필요 없습니다. `데이터 크롤링/`의 스크립트를 직접 실행해 데이터를
+새로 수집하려는 경우에만 `.env.example`을 참고해 아래 키를 채우세요.
+
+```
+MOLIT_SERVICE_KEY=공공데이터포털에서 발급받은 디코딩 서비스키
+KAKAO_REST_API_KEY=카카오 디벨로퍼스에서 발급받은 REST API 키
+```
+
+`MOLIT_SERVICE_KEY`는 국토교통부 실거래가/전월세 API와 한국부동산원 세대수 API에
+공통으로 쓰입니다 (data.go.kr 계열은 데이터셋별 개별 승인 후 동일 키 공유).
+
+## 참고자료
+
+- `근거자료/`: 각 모델링 결정의 통계적 근거 (반경 선정, 변수선택, 과적합 점검, LTV
+  할인폭 캘리브레이션 시도 등). 발표 자료 준비 시 참고.
+- `archive/`: 더 이상 파이프라인에 쓰이지 않는 코드/문서 (초기 EDA 시각화, 데이터
+  명세서, 이전 방법론 인계 문서).

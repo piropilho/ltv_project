@@ -2,3 +2,9 @@ requests
 pandas
 python-dotenv
 openpyxl
+numpy
+scipy
+scikit-learn
+matplotlib
+mgwr
+xgboost
