@@ -1,7 +1,7 @@
 """
 공간 자기상관 감쇠 분석 — 이웃단지 집계(k)를 데이터 기반으로 정하기 위한 진단 스크립트
 =================================================================================
-입력: data/master_19_25_cleaning.csv
+입력: data/csv/master_19_25_cleaning.csv
 
 방법:
 1. 단지 쌍(i, j) 사이의 물리적 거리(km)와 가격 유사도의 관계를 본다.
@@ -21,7 +21,7 @@ import numpy as np
 import pandas as pd
 from sklearn.neighbors import BallTree
 
-MASTER_CSV = "data/master_19_25_cleaning.csv"
+MASTER_CSV = "data/csv/master_19_25_cleaning.csv"
 MIN_TRADES = 5          # 평균가가 너무 불안정한 단지는 제외 (조정 가능)
 BIN_WIDTH_KM = 0.3
 MAX_DIST_KM = 6.0
@@ -103,14 +103,14 @@ def main():
 
     print("\n=== 거리 구간별 가격 상관관계 / 준분산 ===")
     print(corr_result.to_string(index=False))
-    corr_result.to_csv("data/spatial_autocorrelation.csv", index=False, encoding="utf-8-sig")
-    print("\n[저장] data/spatial_autocorrelation.csv")
+    corr_result.to_csv("data/csv/spatial_autocorrelation.csv", index=False, encoding="utf-8-sig")
+    print("\n[저장] data/csv/spatial_autocorrelation.csv")
 
     print("\n=== k(이웃 수)별 평균 반경 및 해당 반경에서의 상관관계 ===")
     k_table = k_to_radius_table(table, corr_result)
     print(k_table.to_string(index=False))
-    k_table.to_csv("data/spatial_autocorrelation_k_table.csv", index=False, encoding="utf-8-sig")
-    print("\n[저장] data/spatial_autocorrelation_k_table.csv")
+    k_table.to_csv("data/csv/spatial_autocorrelation_k_table.csv", index=False, encoding="utf-8-sig")
+    print("\n[저장] data/csv/spatial_autocorrelation_k_table.csv")
 
 
 if __name__ == "__main__":

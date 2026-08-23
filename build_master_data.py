@@ -41,9 +41,10 @@ matplotlib.rcParams["axes.unicode_minus"] = False
 # ------------------------------------------------------------------
 # 설정
 # ------------------------------------------------------------------
-SRC_CSV = "data/19_25_trading.csv"
-OUT_DIR = "data"
-MASTER_OUT = "data/master_19_25_cleaning.csv"
+SRC_CSV = "data/csv/19_25_trading.csv"
+OUT_CSV_DIR = "data/csv"
+OUT_IMG_DIR = "data/img"
+MASTER_OUT = "data/csv/master_19_25_cleaning.csv"
 
 # 정책 이벤트 (LTV 강화 계열). 필요시 팀 결정에 따라 추가/수정.
 POLICY_EVENTS = {
@@ -266,33 +267,34 @@ def trade_threshold_table(df: pd.DataFrame) -> pd.DataFrame:
 # main
 # ------------------------------------------------------------------
 def main():
-    os.makedirs(OUT_DIR, exist_ok=True)
+    os.makedirs(OUT_CSV_DIR, exist_ok=True)
+    os.makedirs(OUT_IMG_DIR, exist_ok=True)
 
     raw = load_and_merge_raw()
     df = clean_data(raw)
     df.to_csv(MASTER_OUT, index=False, encoding="utf-8-sig")
 
     yearly_volume = check_yearly_volume(raw, df)
-    yearly_volume.to_csv(f"{OUT_DIR}/yearly_volume.csv", index=False, encoding="utf-8-sig")
+    yearly_volume.to_csv(f"{OUT_CSV_DIR}/yearly_volume.csv", index=False, encoding="utf-8-sig")
 
     skewness = univariate_analysis(df)
-    skewness.to_csv(f"{OUT_DIR}/skewness_by_year.csv", index=False, encoding="utf-8-sig")
+    skewness.to_csv(f"{OUT_CSV_DIR}/skewness_by_year.csv", index=False, encoding="utf-8-sig")
 
     corr = bivariate_analysis(df)
-    corr.to_csv(f"{OUT_DIR}/correlation.csv", encoding="utf-8-sig")
+    corr.to_csv(f"{OUT_CSV_DIR}/correlation.csv", encoding="utf-8-sig")
 
-    plot_monthly_trend(df, f"{OUT_DIR}/monthly_trend.png")
+    plot_monthly_trend(df, f"{OUT_IMG_DIR}/monthly_trend.png")
 
     regime = regime_summary(df)
-    regime.to_csv(f"{OUT_DIR}/regime_summary.csv", index=False, encoding="utf-8-sig")
+    regime.to_csv(f"{OUT_CSV_DIR}/regime_summary.csv", index=False, encoding="utf-8-sig")
 
     dong_pivot, anova_result = spatial_heterogeneity(df)
-    dong_pivot.to_csv(f"{OUT_DIR}/dong_yearly.csv", encoding="utf-8-sig")
+    dong_pivot.to_csv(f"{OUT_CSV_DIR}/dong_yearly.csv", encoding="utf-8-sig")
 
     threshold_table = trade_threshold_table(df)
-    threshold_table.to_csv(f"{OUT_DIR}/threshold_table.csv", index=False, encoding="utf-8-sig")
+    threshold_table.to_csv(f"{OUT_CSV_DIR}/threshold_table.csv", index=False, encoding="utf-8-sig")
 
-    print(f"\n모든 요약 결과 저장 완료: {OUT_DIR}/")
+    print(f"\n모든 요약 결과 저장 완료: {OUT_CSV_DIR}/, {OUT_IMG_DIR}/")
 
 
 if __name__ == "__main__":

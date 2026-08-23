@@ -120,7 +120,7 @@ def main():
     df = df[ordered]
 
     period_str = f"{START_YM[0]}{START_YM[1]:02d}-{END_YM[0]}{END_YM[1]:02d}"
-    csv_path = f"data/{period_str} {REGION_NAME}.csv"
+    csv_path = f"data/csv/{period_str} {REGION_NAME}.csv"
     df.to_csv(csv_path, index=False, encoding="utf-8-sig")
     print(f"\n총 {len(df)}건 저장 완료 -> {csv_path}")
 

@@ -1,8 +1,16 @@
 """
 트랙 A: GWR(지리적 가중회귀) — "왜 지금 이 단지가 위험한가"를 설명하는 정적 스냅샷 분석
 =======================================================================================
-입력: data/master_19_25_cleaning.csv (7개년, 15,365건, 316개 단지, 좌표 포함) 단독 사용
-      — 학군/지하철/상권 등 입지변수는 아직 결합하지 않음 (실거래가 데이터만으로 베이스라인 산출)
+입력: data/csv/master_19_25_cleaning.csv (7개년, 15,365건, 316개 단지, 좌표 포함)
+      + data/csv/final.csv의 정적 입지변수(경사도/학군/교통) 중 gwr_feature_selection.py가
+        중첩 K-fold LASSO로 선별한 변수만 추가 결합
+
+목적: "실거래가 데이터만으로 GWR을 돌렸을 때"와 "여기에 공간입지특성 변수를 추가했을 때"의
+      설명력(Global R2)을 비교해, "공간입지특성을 추가하면 설명력이 올라간다"는 가설을 검증.
+      GWR 자체는 예측모델이 아니라 "지금까지의 데이터로 오늘 시점의 공간적 리스크 패턴을
+      설명"하는 게 목적이므로, 이 비교는 (LASSO 스크리닝 때와 달리) 검증셋 분리 없이
+      전체표본 적합 R2로 판단한다. 다만 변수를 추가하면 R2가 기계적으로 오르는 경향이 있어,
+      파라미터 수를 보정한 조정R2(adjusted R2)를 함께 본다.
 
 설계 원칙 (기획안 반영):
 - 관측 단위: 좌표점(단지) 1개 = 1행, 정적 스냅샷 (거래 단위 아님)
@@ -11,6 +19,8 @@
 - 최소거래건수 임계값은 고정하지 않고, 커버리지 트레이드오프 표를 먼저 보여준 뒤 결정
 - 검증은 없음(전체표본 회귀) — 국지적 유의성(t-value)으로 판단
 - 좌표는 mgwr 규약에 따라 (lon, lat) 순서로 입력, 독립변수는 표준화
+- 추가되는 입지변수는 gwr_feature_selection.py의 스크리닝 결과만 사용 (경사도 4개 반경을
+  전부 넣지 않고, 중첩 K-fold로 반경/변수를 미리 골라둔 것 — 다중공선성 방지)
 """
 
 import numpy as np
@@ -19,11 +29,26 @@ from sklearn.neighbors import BallTree
 from mgwr.gwr import GWR
 from mgwr.sel_bw import Sel_BW
 
-MASTER_CSV = "data/master_19_25_cleaning.csv"
+MASTER_CSV = "data/csv/master_19_25_cleaning.csv"
+FINAL_CSV = "data/csv/final.csv"  # gwr_feature_selection.py와 동일 출처 (정적 입지변수)
 
 N_NEIGHBORS = 5
 MIN_TRADES_DEFAULT = 10  # 커버리지 표를 본 뒤 조정 가능
 EARTH_RADIUS_KM = 6371.0
+
+SLOPE_RADII = [100, 150, 200, 300]
+SLOPE_STATS = ["mean", "median", "stdev", "min", "max", "range"]
+TRANSIT_COLS = ["straight_dist_m", "walk_dist_m", "walk_time_min", "avg_daily_ridership"]
+STATION_ZONE_ORDER = {"초역세권": 1, "역세권": 2, "준역세권": 3, "비역세권": 4}
+
+# gwr_feature_selection.py 중첩 K-fold LASSO 결과 (data/csv/gwr_lasso_coefs_{MDD,CV}.csv) —
+# 계수가 0이 아니었던 변수만 채택. 반경은 타겟별로 최적 반경이 달라 각각 다름
+# (MDD: 100m 채택, CV: 150m 채택 — 두 스크리닝 결과에서 그대로 가져옴)
+LASSO_SELECTED_MDD = ["slope_max_100m", "avg_daily_ridership", "straight_dist_m",
+                       "slope_range_100m", "station_zone_ord"]
+LASSO_SELECTED_CV = ["slope_median_150m", "station_zone_ord", "straight_dist_m"]
+# walk_dist_m은 제외 — straight_dist_m과 상관관계 1.0(완전공선성)으로 GWR 국지회귀에서
+# 두 계수가 서로 상쇄되며 폭주(+-16 수준)하는 걸 확인해 제거
 
 
 # ------------------------------------------------------------------
@@ -146,7 +171,23 @@ def add_neighbor_momentum(table: pd.DataFrame, df: pd.DataFrame, k: int = N_NEIG
 
 
 # ------------------------------------------------------------------
-# 3. GWR 실행
+# 3. 정적 입지변수 (data/csv/final.csv) — gwr_feature_selection.py와 동일 로직
+#    (두 파일이 서로를 import하면 순환참조가 생기므로 여기 그대로 복제)
+# ------------------------------------------------------------------
+def load_static_features() -> pd.DataFrame:
+    df = pd.read_csv(FINAL_CSV)
+
+    static_cols = [f"slope_{stat}_{r}m" for r in SLOPE_RADII for stat in SLOPE_STATS]
+    static_cols += ["school_pc1"] + TRANSIT_COLS + ["station_zone"]
+
+    table = df.groupby("complex_id")[static_cols].first().reset_index()
+    table["station_zone_ord"] = table["station_zone"].map(STATION_ZONE_ORDER)
+    table = table.drop(columns=["station_zone"])
+    return table
+
+
+# ------------------------------------------------------------------
+# 4. GWR 실행
 # ------------------------------------------------------------------
 def run_gwr(table: pd.DataFrame, feature_cols: list[str], target_col: str, label: str):
     sub = table.dropna(subset=feature_cols + [target_col]).reset_index(drop=True)
@@ -167,9 +208,13 @@ def run_gwr(table: pd.DataFrame, feature_cols: list[str], target_col: str, label
     model = GWR(coords, y, X, bw)
     results = model.fit()
 
+    n, k = len(sub), len(feature_cols)
+    adj_r2 = 1 - (1 - results.R2) * (n - 1) / (n - k - 1)
+
     print(f"  대역폭(bandwidth) = {bw:.1f} (표본 {len(sub)}개 중 이웃 수, "
           f"전체표본에 근접할수록 국지적 이질성이 옅다는 뜻)")
-    print(f"  Global R2 = {results.R2:.3f}")
+    print(f"  Global R2 = {results.R2:.3f}  (조정R2 = {adj_r2:.3f}, 변수 {k}개 기준)  "
+          f"AICc = {results.aicc:.2f}")
 
     tvals = results.tvalues
     var_names = ["intercept"] + feature_cols
@@ -179,7 +224,8 @@ def run_gwr(table: pd.DataFrame, feature_cols: list[str], target_col: str, label
         mean_coef = results.params[:, i].mean()
         print(f"    {name:25s} 유의비율={sig_rate:6.1%}  평균계수={mean_coef:+.4f}")
 
-    return results, sub
+    return {"results": results, "sub": sub, "r2": results.R2, "adj_r2": adj_r2,
+            "aicc": results.aicc, "n": n, "k": k, "bw": bw}
 
 
 # ------------------------------------------------------------------
@@ -195,14 +241,51 @@ def main():
     table = add_neighbor_features(table)
     table = add_neighbor_momentum(table, df)
 
-    table.to_csv("data/gwr_complex_table.csv", index=False, encoding="utf-8-sig")
-    print(f"\n[저장] 단지 테이블 -> data/gwr_complex_table.csv ({len(table)}행)")
+    table.to_csv("data/csv/gwr_complex_table.csv", index=False, encoding="utf-8-sig")
+    print(f"\n[저장] 단지 테이블 -> data/csv/gwr_complex_table.csv ({len(table)}행)")
 
     baseline_features = ["excluUseAr", "building_age", "floor",
                           "neighbor_price_level", "neighbor_momentum_3m"]
 
-    run_gwr(table, baseline_features, "MDD", "baseline (MDD, 주력지표)")
-    run_gwr(table, baseline_features, "CV", "baseline (CV, 보조지표)")
+    static = load_static_features()
+    table = table.merge(static, on="complex_id", how="left")
+
+    comparisons = [
+        ("MDD", baseline_features, baseline_features + LASSO_SELECTED_MDD),
+        ("CV", baseline_features, baseline_features + LASSO_SELECTED_CV),
+    ]
+
+    summary = []
+    for target_col, base_cols, ext_cols in comparisons:
+        base = run_gwr(table, base_cols, target_col, f"baseline ({target_col})")
+        ext = run_gwr(table, ext_cols, target_col, f"baseline+입지특성 ({target_col})")
+        if base is None or ext is None:
+            continue
+        delta_aicc = ext["aicc"] - base["aicc"]
+        if delta_aicc <= -10:
+            verdict = "강한 개선"
+        elif delta_aicc <= -4:
+            verdict = "꽤 확실한 개선"
+        elif delta_aicc <= -2:
+            verdict = "약한 개선"
+        else:
+            verdict = "차이 없음/악화"
+        summary.append({
+            "target": target_col,
+            "baseline_R2": base["r2"], "extended_R2": ext["r2"],
+            "delta_R2": ext["r2"] - base["r2"],
+            "baseline_adjR2": base["adj_r2"], "extended_adjR2": ext["adj_r2"],
+            "delta_adjR2": ext["adj_r2"] - base["adj_r2"],
+            "baseline_AICc": base["aicc"], "extended_AICc": ext["aicc"],
+            "delta_AICc": delta_aicc, "AICc_판정": verdict,
+        })
+
+    summary_df = pd.DataFrame(summary)
+    print(f"\n{'='*70}\n[베이스라인 vs 입지특성 추가 비교 — 가설: 입지특성 추가 시 설명력 상승]")
+    print(f"(AICc는 낮을수록 좋은 모델. delta_AICc = 확장 - 베이스라인이 음수일수록 확장판이 더 나음)")
+    print(summary_df.to_string(index=False))
+    summary_df.to_csv("data/csv/gwr_baseline_vs_extended.csv", index=False, encoding="utf-8-sig")
+    print("[저장] -> data/csv/gwr_baseline_vs_extended.csv")
 
 
 if __name__ == "__main__":
