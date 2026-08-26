@@ -20,6 +20,16 @@
 import numpy as np
 import pandas as pd
 from sklearn.neighbors import BallTree
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
+
+for font_name in ["AppleGothic", "Malgun Gothic", "NanumGothic"]:
+    if any(font_name in f.name for f in fm.fontManager.ttflist):
+        matplotlib.rc("font", family=font_name)
+        break
+matplotlib.rcParams["axes.unicode_minus"] = False
 
 MASTER_CSV = "data/csv/master_19_25_cleaning.csv"
 MIN_TRADES = 5          # 평균가가 너무 불안정한 단지는 제외 (조정 가능)
@@ -27,7 +37,9 @@ BIN_WIDTH_KM = 0.3
 MAX_DIST_KM = 6.0
 MIN_PAIRS_PER_BIN = 30  # 이보다 적은 구간은 상관계수가 불안정하므로 제외
 K_CANDIDATES = [3, 5, 8, 10, 15, 20]
+ADOPTED_K = 5
 EARTH_RADIUS_KM = 6371.0
+OUT_PNG = "data/img/spatial_autocorrelation.png"
 
 
 def load_complex_table() -> pd.DataFrame:
@@ -96,6 +108,45 @@ def k_to_radius_table(table: pd.DataFrame, corr_result: pd.DataFrame) -> pd.Data
     return pd.DataFrame(rows)
 
 
+def plot_result(corr_result: pd.DataFrame, k_table: pd.DataFrame):
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5.5))
+
+    ax = axes[0]
+    ax.plot(corr_result["dist_bin_mid"], corr_result["correlation"],
+            marker="o", color="#1f4e8c", label="가격 상관계수")
+    ax.set_xlabel("단지간 거리 (km)")
+    ax.set_ylabel("가격 상관계수", color="#1f4e8c")
+    ax.tick_params(axis="y", labelcolor="#1f4e8c")
+    ax.set_title("거리별 가격 상관로그램\n(거리가 멀수록 상관관계가 줄어드는지 확인)")
+
+    ax2 = ax.twinx()
+    ax2.plot(corr_result["dist_bin_mid"], corr_result["semivariance"],
+              marker="s", color="#c0392b", linestyle="--", alpha=0.7, label="준분산")
+    ax2.set_ylabel("준분산 (semivariance)", color="#c0392b")
+    ax2.tick_params(axis="y", labelcolor="#c0392b")
+
+    adopted_radius = k_table.loc[k_table["k"] == ADOPTED_K, "avg_radius_km"].values[0]
+    ax.axvline(adopted_radius, color="#333333", linestyle=":", linewidth=1)
+    ax.text(adopted_radius + 0.05, ax.get_ylim()[1] * 0.95, f"k={ADOPTED_K} 평균반경",
+            fontsize=8, color="#333333")
+
+    ax = axes[1]
+    colors = ["#1f6f43" if k == ADOPTED_K else "#8fa8c7" for k in k_table["k"]]
+    bars = ax.bar(k_table["k"].astype(str), k_table["avg_radius_km"], color=colors)
+    for bar, corr in zip(bars, k_table["corr_at_that_radius"]):
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.05,
+                f"r={corr:.2f}", ha="center", fontsize=8)
+    ax.set_xlabel("이웃 개수 k")
+    ax.set_ylabel("평균 반경 (km)")
+    ax.set_title(f"k별 평균 반경 및 그 지점의 상관관계\n(막대 위 숫자 = 해당 반경에서의 상관계수, 채택값 k={ADOPTED_K} 강조)")
+
+    fig.suptitle("공간 이웃 개수(k) 선정 근거 -- 상관로그램 기반 진단", fontsize=13)
+    fig.tight_layout()
+    fig.savefig(OUT_PNG, dpi=130)
+    plt.close(fig)
+    print(f"\n[저장] {OUT_PNG}")
+
+
 def main():
     table = load_complex_table()
     pairs = build_pairwise(table)
@@ -111,6 +162,8 @@ def main():
     print(k_table.to_string(index=False))
     k_table.to_csv("data/csv/spatial_autocorrelation_k_table.csv", index=False, encoding="utf-8-sig")
     print("\n[저장] data/csv/spatial_autocorrelation_k_table.csv")
+
+    plot_result(corr_result, k_table)
 
 
 if __name__ == "__main__":

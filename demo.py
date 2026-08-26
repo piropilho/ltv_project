@@ -8,7 +8,7 @@ ltv_scoring.py가 미리 계산해둔 결과(data/csv/ltv_assignment.csv)를 조
 기준 시점은 ltv_scoring.py가 예측에 사용한 마지막 관측 분기(2025-12)로 고정되어
 있다 -- "오늘 이 단지를 산다면"이 아니라 "데이터가 확보된 가장 최근 시점 기준"이라는
 점을 데모 출력에도 명시한다 (정책이벤트 경과일 등 시간 피처의 외삽 문제를 피하기 위한
-설계, liquidity_forward_prediction.py STEP2 참고).
+설계, liquidity_forward_prediction.py STEP2 참고)
 """
 
 import pandas as pd
@@ -67,14 +67,13 @@ def show_profile(row: pd.Series, purchase_price: float | None):
 
     print(f" 예측 유동성(향후1년): {row['predicted_liquidity_1y']:.1%}  "
           f"(동대문구 내 상위 {100 - row['liquidity_percentile']:.0f}%)")
-    print(f" 리스크 등급        : {row['tier_label']}")
-    print(f" 제안 LTV          : {row['assigned_ltv_pct']:.0f}%  (정부 상한 40% 이내 차등)")
+    print(f" 제안 LTV          : {row['assigned_ltv_pct']:.1f}%  (정부 상한 40% 이내, 백분위 연속 차등)")
 
     if purchase_price is not None:
         loan = purchase_price * row["assigned_ltv_pct"] / 100
         print("-" * 62)
         print(f" 희망 매매가        : {purchase_price:,.0f}만원")
-        print(f" 예상 대출가능금액  : {loan:,.0f}만원  (매매가 x LTV {row['assigned_ltv_pct']:.0f}%)")
+        print(f" 예상 대출가능금액  : {loan:,.0f}만원  (매매가 x LTV {row['assigned_ltv_pct']:.1f}%)")
     print("=" * 62)
 
 

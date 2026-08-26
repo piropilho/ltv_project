@@ -22,9 +22,14 @@ LTV_CAP으로 채택 — 프로젝트 기획안이 예시로 든 수치와 정�
 날짜 범위를 벗어나면 트리모델이 외삽하지 못해 성능이 저하된다는 게 이미
 liquidity_forward_prediction.py STEP2에서 확인된 문제라, 동일한 리스크를 피하기 위함.
 
-차등 구조: 4분위 이산 티어. 기획안의 "신용점수 낮으면 상한 40%에서 30%만" 예시와
-동일한 폭(최대 -10%p)을 그대로 채택해 "신용점수 차등과 같은 원리"라는 설명이
-1:1로 성립하게 했다. 정확한 상한/폭 수치는 팀 협의로 조정 가능하도록 상수로 노출.
+차등 구조: 4분위 이산 티어 대신 백분위 연속 선형 스케일링을 채택. 원래 4분위
+이산 등급(1~4등급)으로 설계했었는데, "이게 실제 여신심사 관행과 일치하냐"는
+질문에 확인해보니 안 맞았다 -- 한국 개인신용평가는 2021년 신용점수제 전환 이후
+1~10등급 같은 이산 등급이 아니라 0~1000점 연속 점수로 대출조건을 차등한다.
+그래서 "신용점수제와 같은 원리"라는 설명이 실제로 성립하도록, 예측 유동성의
+백분위(0~100)를 LTV_FLOOR~LTV_CAP 구간에 그대로 선형 매핑한다. 이산 등급 대비
+개별 단지 간 미세한 차이도 반영되지만, "몇 등급"이라는 직관적 설명력은 줄어든다.
+정확한 상한/폭 수치는 팀 협의로 조정 가능하도록 상수로 노출.
 """
 
 import numpy as np
@@ -56,15 +61,9 @@ FEATURE_COLS = BASELINE_FEATURES + STEP6_EXTRA_FEATURES
 # ------------------------------------------------------------------
 # LTV 매핑 상수 — 근거는 모듈 docstring 참고, 팀 협의로 조정 가능
 # ------------------------------------------------------------------
-LTV_CAP = 40.0            # 무주택 실수요자 기준 정부 상한 (2025.10.15 대책, 동대문구 투기과열+조정대상)
-LTV_TIER_TABLE = {        # 유동성 예측 분위(4=최상위) -> 승인 LTV(%). 최대 폭 10%p (기획안 신용점수 예시와 동일)
-    4: LTV_CAP,        # 상위 25% (유동성 가장 높음) -> 상한까지 완화
-    3: LTV_CAP - 3.0,
-    2: LTV_CAP - 7.0,
-    1: LTV_CAP - 10.0,  # 하위 25% (유동성 가장 낮음) -> 가장 보수적
-}
-TIER_LABELS = {4: "1등급(상위 유동성)", 3: "2등급", 2: "3등급", 1: "4등급(하위 유동성)"}
-TIER_COLORS = {4: "#1f6f43", 3: "#5ba86a", 2: "#e0a13c", 1: "#c0392b"}
+LTV_CAP = 40.0             # 무주택 실수요자 기준 정부 상한 (2025.10.15 대책, 동대문구 투기과열+조정대상)
+LTV_MAX_DISCOUNT = 10.0    # 최대 할인폭(%p) -- 기획안의 신용점수 차등 예시(40%->30%)와 동일 폭
+LTV_FLOOR = LTV_CAP - LTV_MAX_DISCOUNT   # 예측 유동성이 가장 낮은 단지의 LTV (=30.0)
 OUT_PNG = "data/img/ltv_assignment.png"
 
 
@@ -132,41 +131,43 @@ def assign_ltv(snapshot: pd.DataFrame, model: xgb.XGBRegressor) -> pd.DataFrame:
         print(f"[제외] 피처 결측으로 {dropped}개 단지 제외 (세대수 미매칭 등)")
 
     # 회귀 예측이라 [0,1] 경계(활동비율의 정의역)를 살짝 벗어날 수 있어 클리핑
-    # (순위/티어링에는 영향 없음 — 단조 변환이라 상대순서 보존)
+    # (백분위 순위에는 영향 없음 — 단조 변환이라 상대순서 보존)
     sub["predicted_liquidity_1y"] = model.predict(sub[FEATURE_COLS]).clip(0.0, 1.0)
     sub["liquidity_percentile"] = sub["predicted_liquidity_1y"].rank(pct=True) * 100
-    sub["liquidity_tier"] = pd.qcut(sub["predicted_liquidity_1y"], 4, labels=[1, 2, 3, 4]).astype(int)
-    sub["tier_label"] = sub["liquidity_tier"].map(TIER_LABELS)
-    sub["assigned_ltv_pct"] = sub["liquidity_tier"].map(LTV_TIER_TABLE)
+
+    # 백분위(0~100)를 LTV_FLOOR~LTV_CAP 구간에 그대로 선형 매핑 (신용점수제와 동일 원리)
+    sub["assigned_ltv_pct"] = (LTV_FLOOR + (LTV_CAP - LTV_FLOOR) * sub["liquidity_percentile"] / 100).round(1)
     return sub
 
 
 def plot_result(result: pd.DataFrame):
     fig, axes = plt.subplots(1, 2, figsize=(13, 5.5))
+    cmap = plt.get_cmap("RdYlGn")  # 빨강(위험/저유동성) -> 초록(안전/고유동성), 연속 색상
 
     ax = axes[0]
     sorted_r = result.sort_values("predicted_liquidity_1y").reset_index(drop=True)
-    colors = sorted_r["liquidity_tier"].map(TIER_COLORS)
+    colors = cmap(sorted_r["liquidity_percentile"] / 100)
     ax.bar(range(len(sorted_r)), sorted_r["predicted_liquidity_1y"], color=colors, width=1.0)
     ax.set_xlabel("단지 (예측 유동성 오름차순 정렬)")
     ax.set_ylabel("예측 유동성 (향후 1년 거래분기비율)")
-    ax.set_title("단지별 예측 유동성 분포 및 등급")
-    handles = [plt.Rectangle((0, 0), 1, 1, color=TIER_COLORS[t]) for t in [4, 3, 2, 1]]
-    ax.legend(handles, [TIER_LABELS[t] for t in [4, 3, 2, 1]], fontsize=8, loc="upper left")
+    ax.set_title("단지별 예측 유동성 분포\n(색: 백분위 낮음=빨강 -> 높음=초록)")
 
     ax = axes[1]
-    tiers = [1, 2, 3, 4]
-    ltvs = [LTV_TIER_TABLE[t] for t in tiers]
-    bars = ax.bar([TIER_LABELS[t] for t in tiers], ltvs, color=[TIER_COLORS[t] for t in tiers])
+    x_line = np.linspace(0, 100, 100)
+    y_line = LTV_FLOOR + (LTV_CAP - LTV_FLOOR) * x_line / 100
+    ax.plot(x_line, y_line, color="#333333", linewidth=1.5, zorder=1, label="LTV 매핑 함수")
+    ax.scatter(result["liquidity_percentile"], result["assigned_ltv_pct"],
+               c=result["liquidity_percentile"], cmap=cmap, s=14, zorder=2, edgecolors="none")
     ax.axhline(LTV_CAP, color="#333333", linestyle="--", linewidth=1)
-    ax.text(-0.4, LTV_CAP + 1.2, f"정부 상한 {LTV_CAP:.0f}%", fontsize=8, ha="left", color="#333333")
-    for bar, ltv in zip(bars, ltvs):
-        ax.text(bar.get_x() + bar.get_width() / 2, ltv + 1.2, f"{ltv:.0f}%", ha="center", fontsize=9)
+    ax.axhline(LTV_FLOOR, color="#333333", linestyle="--", linewidth=1)
+    ax.text(2, LTV_CAP + 0.6, f"정부 상한 {LTV_CAP:.0f}%", fontsize=8, ha="left", color="#333333")
+    ax.text(2, LTV_FLOOR - 1.6, f"최저 LTV {LTV_FLOOR:.0f}%", fontsize=8, ha="left", color="#333333")
+    ax.set_xlabel("예측 유동성 백분위 (동대문구 내 상대순위)")
     ax.set_ylabel("승인 LTV (%)")
-    ax.set_ylim(0, LTV_CAP + 6)
-    ax.set_title("유동성 등급별 차등 LTV\n(정부 상한 이내에서 안전한 담보일수록 완화)")
+    ax.set_ylim(LTV_FLOOR - 4, LTV_CAP + 4)
+    ax.set_title("백분위 -> LTV 연속 선형 매핑\n(신용점수제와 동일 원리: 등급이 아니라 연속 점수로 차등)")
 
-    fig.suptitle("동대문구 단지별 예측 유동성 기반 LTV 차등 부여", fontsize=13)
+    fig.suptitle("동대문구 단지별 예측 유동성 기반 LTV 차등 부여 (연속 백분위 방식)", fontsize=13)
     fig.tight_layout()
     fig.savefig(OUT_PNG, dpi=130)
     plt.close(fig)
@@ -183,15 +184,21 @@ def main():
     names = pd.read_csv(FINAL_CSV)[["complex_id", "apt_name"]].drop_duplicates("complex_id")
     result = result.merge(names, on="complex_id", how="left")
 
-    print(f"\n[티어별 요약]")
-    summary = result.groupby(["liquidity_tier", "tier_label", "assigned_ltv_pct"]).agg(
+    print(f"\n[백분위 구간별 요약] (참고용 -- 실제 LTV는 연속값이라 구간 구분 없이 산출됨)")
+    result["_quartile_view"] = pd.qcut(result["liquidity_percentile"], 4,
+                                        labels=["하위 25%", "중하 25%", "중상 25%", "상위 25%"])
+    summary = result.groupby("_quartile_view", observed=True).agg(
         n_complex=("complex_id", "size"),
         mean_predicted_liquidity=("predicted_liquidity_1y", "mean"),
-    ).reset_index().sort_values("liquidity_tier", ascending=False)
+        mean_assigned_ltv_pct=("assigned_ltv_pct", "mean"),
+        min_ltv=("assigned_ltv_pct", "min"),
+        max_ltv=("assigned_ltv_pct", "max"),
+    ).reset_index()
     print(summary.to_string(index=False))
+    result = result.drop(columns=["_quartile_view"])
 
     out_cols = ["complex_id", "apt_name", "unit_cnt", "predicted_liquidity_1y", "liquidity_percentile",
-                "liquidity_tier", "tier_label", "assigned_ltv_pct"]
+                "assigned_ltv_pct"]
     result[out_cols].sort_values("liquidity_percentile", ascending=False).to_csv(
         "data/csv/ltv_assignment.csv", index=False, encoding="utf-8-sig")
     summary.to_csv("data/csv/ltv_tier_summary.csv", index=False, encoding="utf-8-sig")
